@@ -1,5 +1,5 @@
 import winim except RECT
-import core, options, sugar
+import core, options, sugar, strformat
 
 type
   DisplayTreeNodeKind* = enum
@@ -27,6 +27,13 @@ func newLeafNode*(win: HWND, rect: Rect[float]): DisplayTreeNode =
 
 using dtn: DisplayTreeNode
 
+proc `$`*(dtn): string =
+  case dtn.kind:
+    of dtkLeaf:
+      fmt"Leaf(rect: {dtn.rect}, win: {dtn.win})"
+    of dtkContainer:
+      fmt"Container({dtn.orientation}, rect: {dtn.rect}, nChildren: {dtn.children.len})"
+
 func parent*(dtn): DisplayTreeNode = dtn.parent.get()
 
 proc addChild*(dtn; child: DisplayTreeNode) =
@@ -40,7 +47,9 @@ proc forNode*[T](dtn; callback: proc(dtn: DisplayTreeNode): Option[T]):
     return res
   if dtn.kind != dtkLeaf:
     for child in dtn.children:
-      return child.forNode callback
+      let childRes = child.forNode callback
+      if childRes.isSome:
+        return childRes
 
 func findLeaf*(dtn; win: HWND): Option[DisplayTreeNode] =
   dtn.forNode proc(it: DisplayTreeNode): Option[DisplayTreeNode] =
@@ -131,3 +140,17 @@ func getAbsVersion*(dtn; dims: Rect): DisplayTreeNode =
     of dtkLeaf:
       result = newLeafNode(dtn.win, newRect)
 
+
+func getRoot*(dtn): DisplayTreeNode =
+  result = dtn
+  while result.parent.isSome:
+    result = result.parent.unsafeget
+
+
+func getLeafNodes*(dtn): seq[DisplayTreeNode] =
+  var leafs = result
+  discard dtn.forNode proc(it: DisplayTreeNode): Option[void] =
+    if it.kind == dtkLeaf:
+      leafs.add it
+    result = none(void)
+  result = leafs

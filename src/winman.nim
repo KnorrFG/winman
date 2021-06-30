@@ -76,6 +76,14 @@ proc getMonitorRect(): Rect[int32] =
   initRect(res.left, res.top, res.right - res.left, res.bottom - res.top) 
 
 
+template getForegroundWindowOrReturn(s: State, mustBeManaged: bool): untyped =
+  let curWin = GetForegroundWindow()
+  if curWin == 0 or (mustBeManaged and not (curWin in s.managedWindows)):
+    return
+  else:
+    curWin
+
+
 proc positionWindows(dtn: DisplayTreeNode) =
   for child in dtn.children:
     case child.kind:
@@ -112,44 +120,84 @@ proc wrapLastWinInNewContainer(s: var State): DisplayTreeNode =
   newContainer
 
 
-proc grabWindow(s: var State) =
-  let curWin = GetForegroundWindow()
-  if curWin in s.managedWindows:
-    return
+proc makeGrabWindow(): EventFunc =
+  # While it looks completely unnecessary to return an anoymous proc here, it
+  # is necessary, because this can be .closure. and either all or no
+  # eventFunctions must have closures. And since the others have ...
+  result = proc(s: var State) =
+    let curWin = GetForegroundWindow()
+    if curWin in s.managedWindows:
+      return
 
-  let curContainer =
-    # if the user pressed one of the orentation keys, wrap the last window in a
-    # container
-    if s.containerOrientationFlag.id == s.currentCommandId - 1 and
-        s.lastUsedWindow.isSome and
-        s.lastUsedWindow.get in s.managedWindows:
-      wrapLastWinInNewContainer s
-    else:
-      if s.lastUsedWindow.isSome and s.lastUsedWindow.get in s.managedWindows:
-        s.managedWindows[s.lastUsedWindow.unsafeGet].parent
+    let curContainer =
+      # if the user pressed one of the orentation keys, wrap the last window in a
+      # container
+      if s.containerOrientationFlag.id == s.currentCommandId - 1 and
+          s.lastUsedWindow.isSome and
+          s.lastUsedWindow.get in s.managedWindows:
+        wrapLastWinInNewContainer s
       else:
-        s.getActiveTree
+        if s.lastUsedWindow.isSome and s.lastUsedWindow.get in s.managedWindows:
+          s.managedWindows[s.lastUsedWindow.unsafeGet].parent
+        else:
+          s.getActiveTree
 
-  let newLeaf = curContainer.addNewWindow curWin
-  s.managedWindows[curWin] = newLeaf
-  curContainer.getAbsVersion(getMonitorRect()).positionWindows
+    let newLeaf = curContainer.addNewWindow curWin
+    s.managedWindows[curWin] = newLeaf
+    curContainer.getAbsVersion(getMonitorRect()).positionWindows
 
 
 proc makeOrientationFlagSetter(orient: Orientation): EventFunc =
   result = proc (s: var State) =
     s.containerOrientationFlag = (id: s.currentCommandId, orient: orient)
 
+
 proc selectWindowByDirection(s: var State, dir: Direction) =
-  discard
+  # Todo: this works, but its not ideal, as it only takes into account window
+  # corners. It needs to respect rectangles to get intuitive results
+  let 
+    curWin = s.getForegroundWindowOrReturn(mustBeManaged=true)
+    targetOri = dir.toOri
+    child = s.managedWindows[curWin]
+
+  if targetOri == oDeep:
+    error "Not implemented"
+  else:
+    let 
+      root = child.getRoot
+      areaOfInterest = child.rect.extend(initRect[float](0, 0, 1, 1), targetOri)
+      candidates = root.getLeafNodes().
+        filterIt(it.rect.intersects areaOfInterest)
+      relWinCorners = collect(initTable(candidates.len)):
+        for c in candidates:
+          {c.rect.pos - child.rect.pos: c}
+      comperator = toCmp[float](targetOri)
+      (cmpTarget, getter) = case dir:
+        of dirLeft, dirUp: (-1, (x: seq[Pos[float]]) => x[^1])
+        of dirRight, dirDown: (1, (x: seq[Pos[float]]) => x[0])
+        else:
+          error "this should never happen"
+      filteredCorners = toSeq(relWinCorners.keys).
+        filterIt(comperator(it, initPos(0.0, 0.0)) == cmpTarget)
+
+    dump candidates
+    dump filteredCorners
+    # We either first filter all smaller corners, and get the largest, or all
+    # larger ones and get the smallest. 
+    if filteredCorners.len > 0:
+      let newWin = relWinCorners[filteredCorners.getter]
+      echo "selecting: ", newWin
+      SetForegroundWindow newWin.win
+    else:
+      echo "no candidates remaining"
+
 
 proc makeSelectFunction(d: Direction): EventFunc =
   (s: var State) => selectWindowByDirection(s, d)
 
-proc errorProc(s: var State) = error "Not Implemented"
-
 proc dispatch(ev: Event): EventFunc =
   case ev:
-    of eGrabWindow: grabWindow
+    of eGrabWindow: makeGrabWindow()
     of eAddSubGroupD: makeOrientationFlagSetter(oDeep)
     of eAddSubGroupH: makeOrientationFlagSetter(oHorizontal)
     of eAddSubGroupV: makeOrientationFlagSetter(oVertical)
