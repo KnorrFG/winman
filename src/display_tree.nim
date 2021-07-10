@@ -6,7 +6,7 @@ type
     dtkLeaf, dtkContainer
   DisplayTreeNode* = ref object
     rect*: Rect[float]
-    parent: Option[DisplayTreeNode]
+    parent*: Option[DisplayTreeNode]
     case kind*: DisplayTreeNodeKind
     of dtkLeaf:
       win*: HWND
@@ -34,7 +34,6 @@ proc `$`*(dtn): string =
     of dtkContainer:
       fmt"Container({dtn.orientation}, rect: {dtn.rect}, nChildren: {dtn.children.len})"
 
-func parent*(dtn): DisplayTreeNode = dtn.parent.get()
 
 proc addChild*(dtn; child: DisplayTreeNode) =
   dtn.children.add(child)

@@ -112,7 +112,7 @@ proc wrapLastWinInNewContainer(s: var State): DisplayTreeNode =
     lastWinNode = s.managedWindows[s.lastUsedWindow.get]
     newContainer = newContainerNode(s.containerOrientationFlag.orient,
                                     lastWinNode.rect)
-    oldParent = lastWinNode.parent
+    oldParent = lastWinNode.parent.get()
 
   oldParent.children.delete(oldParent.children.find(lastWinNode))
   newContainer.addChild lastWinNode
@@ -138,7 +138,7 @@ proc makeGrabWindow(): EventFunc =
         wrapLastWinInNewContainer s
       else:
         if s.lastUsedWindow.isSome and s.lastUsedWindow.get in s.managedWindows:
-          s.managedWindows[s.lastUsedWindow.unsafeGet].parent
+          s.managedWindows[s.lastUsedWindow.unsafeGet].parent.get()
         else:
           s.getActiveTree
 
@@ -152,44 +152,81 @@ proc makeOrientationFlagSetter(orient: Orientation): EventFunc =
     s.containerOrientationFlag = (id: s.currentCommandId, orient: orient)
 
 
+proc selectWin2D(s: var State, dir: Direction, targetOri: Orientation,
+                 child: DisplayTreeNode) =
+  assert targetOri in [oVertical, oHorizontal]
+  let 
+    root = child.getRoot
+    areaOfInterest = child.rect.extend(initRect[float](0, 0, 1, 1), targetOri)
+    candidates = root.getLeafNodes().
+      filterIt(it.rect.intersects areaOfInterest)
+    # the idea is, that the corners of all candidates windows are compared to
+    # the currently selected window. Then they are either sorted horizontally
+    # or vertically, and the smallest element, that is bigger than the
+    # current window, or the biggest element that is smaller than the current
+    # window is used.
+    relWinCorners = collect(initTable(candidates.len)):
+      for c in candidates:
+        {c.rect.pos - child.rect.pos: c}
+    comperator = toCmp[float](targetOri)
+    (cmpTarget, getter) = case dir:
+      of dirLeft, dirUp: (-1, (x: seq[Pos[float]]) => x[^1])
+      of dirRight, dirDown: (1, (x: seq[Pos[float]]) => x[0])
+      else:
+        error "this should never happen"
+    filteredCorners = toSeq(relWinCorners.keys).
+      filterIt(comperator(it, initPos(0.0, 0.0)) == cmpTarget)
+
+  # We either first filter all smaller corners, and get the largest, or all
+  # larger ones and get the smallest. 
+  if filteredCorners.len > 0:
+    let newWin = relWinCorners[filteredCorners.getter]
+    SetForegroundWindow newWin.win
+
+
+proc selectWinDeep(s: var State, dir: Direction, child: DisplayTreeNode) =
+  assert dir in [dirFront, dirBack]
+  # this is very simple, we just go up the tree, until we finde a deep container,
+  # und select the next or the previous child
+  var 
+    deepParent = none(DisplayTreeNode)
+    currentNode = child
+    lastNode = child
+  while deepParent.isNone and currentNode.parent.isSome:
+    lastNode = currentNode
+    currentNode = currentNode.parent.get
+    if currentNode.kind == dtkContainer and currentNode.orientation == oDeep:
+      deepParent = some(currentNode)
+
+  if deepParent.isSome:
+    # nim follows the c tradition of the mod operator not actually implementing
+    # modulo. -1 mod 3 should result in 2, but will result in -1. So I add the
+    # length of the children once, to avoid negative numbers
+    let 
+      curIndex = deepParent.unsafeGet.children.find lastNode
+      offset = if dir == dirFront: -1 else: 1
+      nChildren = deepParent.unsafeGet.children.len
+      newIndex = (curIndex + offset + nChildren) mod nChildren
+    
+    # the next child might be a container again, so we will go down to the
+    # first leaf
+    currentNode = deepParent.unsafeGet.children[newIndex]
+    while currentNode.kind != dtkLeaf:
+      currentNode = currentNode.children[0]
+    SetForegroundWindow currentNode.win
+
+
+
 proc selectWindowByDirection(s: var State, dir: Direction) =
-  # Todo: this works, but its not ideal, as it only takes into account window
-  # corners. It needs to respect rectangles to get intuitive results
   let 
     curWin = s.getForegroundWindowOrReturn(mustBeManaged=true)
     targetOri = dir.toOri
     child = s.managedWindows[curWin]
 
   if targetOri == oDeep:
-    error "Not implemented"
+    selectWinDeep s, dir, child
   else:
-    let 
-      root = child.getRoot
-      areaOfInterest = child.rect.extend(initRect[float](0, 0, 1, 1), targetOri)
-      candidates = root.getLeafNodes().
-        filterIt(it.rect.intersects areaOfInterest)
-      relWinCorners = collect(initTable(candidates.len)):
-        for c in candidates:
-          {c.rect.pos - child.rect.pos: c}
-      comperator = toCmp[float](targetOri)
-      (cmpTarget, getter) = case dir:
-        of dirLeft, dirUp: (-1, (x: seq[Pos[float]]) => x[^1])
-        of dirRight, dirDown: (1, (x: seq[Pos[float]]) => x[0])
-        else:
-          error "this should never happen"
-      filteredCorners = toSeq(relWinCorners.keys).
-        filterIt(comperator(it, initPos(0.0, 0.0)) == cmpTarget)
-
-    dump candidates
-    dump filteredCorners
-    # We either first filter all smaller corners, and get the largest, or all
-    # larger ones and get the smallest. 
-    if filteredCorners.len > 0:
-      let newWin = relWinCorners[filteredCorners.getter]
-      echo "selecting: ", newWin
-      SetForegroundWindow newWin.win
-    else:
-      echo "no candidates remaining"
+    selectWin2D s, dir, targetOri, child
 
 
 proc makeSelectFunction(d: Direction): EventFunc =
@@ -245,7 +282,8 @@ proc main()=
       handler(state)
       state.currentCommandId.inc
       let curWin = GetForegroundWindow()
-      state.lastUsedWindow = if curWin != 0: some(curWin) else: none(HWND)
+      if curWin in state.managedWindows:
+        state.lastUsedWindow = if curWin != 0: some(curWin) else: none(HWND)
 
 
 when isMainModule:

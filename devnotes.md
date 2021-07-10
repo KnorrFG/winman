@@ -14,3 +14,21 @@ Also, when using v, h, and d prefixes, it will only work, if the currently
 selected window is managed. but its very intuitive to press that directly
 before grabbing a new window, when the new window is already active. And this
 2nd scenario should work too.
+
+## Roadmap:
+
+### First usable Version
+
+- [x] depth selection
+- [x] fix orientation input
+- deal with disapearing windows
+- hk to remove window
+- hk to remove and close window
+- groups
+
+### Horizon:
+
+- config script
+- multi monitor support
+- moving windows with a gui
+- virtual desktop support
