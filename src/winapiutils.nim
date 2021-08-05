@@ -1,4 +1,4 @@
-import winim, core
+import winim, core, strformat
 
 proc GetScaleFactorForMonitor*(hMon: HMONITOR, pScale: ptr DEVICE_SCALE_FACTOR): HRESULT
   {.stdcall, dynlib: "Shcore", importc: "GetScaleFactorForMonitor".}
@@ -15,9 +15,10 @@ proc getMargins*(hwnd: HWND): winim.Rect =
     winSizeWithMargins: winim.Rect
     winRect: winim.Rect
     scale: DEVICE_SCALE_FACTOR
-  if DwmGetWindowAttribute(hwnd, DWMWA_EXTENDED_FRAME_BOUNDS,
-      &winSizeWithMargins, sizeof(winSizeWithMargins).DWORD).FAILED:
-    error "Couldn't retrieve window size with margin"
+  let res= DwmGetWindowAttribute(hwnd, DWMWA_EXTENDED_FRAME_BOUNDS,
+      &winSizeWithMargins, sizeof(winSizeWithMargins).DWORD)
+  if res.FAILED:
+    error fmt"Couldn't retrieve window size with margin 0x{res.toHex()}"
   if GetWindowRect(hwnd, &winRect).FAILED:
     error "Couldn't retrieve window size without margin"
   let mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST)

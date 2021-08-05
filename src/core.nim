@@ -1,4 +1,4 @@
-import macros, sugar, hashes
+import macros, sugar, hashes, strformat
 
 type 
   Event* = enum
@@ -6,7 +6,8 @@ type
     eSelectWinU, eSelectWinD, eSelectWinL, eSelectWinR, eSelectWinF,
     eSelectWinB, eChangeOrientation, eSelectGroup1, eSelectGroup2,
     eSelectGroup3, eSelectGroup4, eSelectGroup5, eSelectGroup6, eSelectGroup7,
-    eSelectGroup8, eSelectGroup9, eSelectGroup10
+    eSelectGroup8, eSelectGroup9, eSelectGroup10, eTouch, eTouchParent,
+    eDropWindow
   Direction* = enum
     dirUp, dirDown, dirLeft, dirRight, dirFront, dirBack
   Rect*[T] = object
@@ -27,6 +28,8 @@ func initRect*[T](x, y, w, h: T): Rect[T] = Rect[T](x:x, y:y, w:w, h:h)
 proc `$`*[T](x: Size[T]): string = x.repr
 proc `$`*[T](x: Pos[T]): string = x.repr
 proc `$`*[T](x: Rect[T]): string = x.repr
+proc `$`*(x: Rect[float]): string =
+  fmt"Rect({x.x:.2f}, {x.y:.2f}, {x.w:.2f}, {x.h:.2f})"
 proc `$`*(x: Orientation): string =
   case x:
     of oHorizontal: "Horizontal"

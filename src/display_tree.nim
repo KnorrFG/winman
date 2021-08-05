@@ -1,5 +1,5 @@
 import winim except RECT
-import core, options, sugar, strformat
+import core, options, sugar, strformat, sequtils, strutils
 
 type
   DisplayTreeNodeKind* = enum
@@ -15,13 +15,15 @@ type
       children*: seq[DisplayTreeNode]
 
 
+const defaultRect = initRect[float](0, 0, 0, 0)
+
 func newContainerNode*(orientation: Orientation, rect: Rect[float]):
     DisplayTreeNode =
   DisplayTreeNode(rect: rect, kind: dtkContainer, orientation: orientation,
                   children: @[])
 
 
-func newLeafNode*(win: HWND, rect: Rect[float]): DisplayTreeNode =
+func newLeafNode*(win: HWND, rect: Rect[float] = defaultRect): DisplayTreeNode =
   DisplayTreeNode(rect: rect, kind: dtkLeaf, win: win)
 
 
@@ -56,9 +58,7 @@ func findLeaf*(dtn; win: HWND): Option[DisplayTreeNode] =
       return some(it)
 
 proc reposition*(dtn; newRect: Rect) =
-  if dtn.rect == newRect:
-    return
-
+  ## Resizes all elements of an container proportionally to match its new size.
   case dtn.kind:
     of dtkLeaf:
       dtn.rect = newRect
@@ -75,29 +75,29 @@ proc reposition*(dtn; newRect: Rect) =
       for child in dtn.children:
         let newChildRect = case dtn.orientation:
           of oHorizontal:
-            var tmp = child.rect
+            var tmp = newRect
             tmp.x = offset
             tmp.w = child.rect.w * factor
-            offset += child.rect.w
+            offset += tmp.w
             tmp
           of oVertical:
-            var tmp = child.rect
+            var tmp = newRect
             tmp.y = offset
             tmp.h = child.rect.h * factor
-            offset += child.rect.h
+            offset += tmp.h
             tmp
           of oDeep:
             newRect
         child.reposition(newChildRect)
       dtn.rect = newRect
 
-func addNewWindow*(dtn; win: HWND): DisplayTreeNode =
+proc addNode*(dtn; newNode: DisplayTreeNode)=
   if dtn.kind != dtkContainer:
     raise ValueError.newException("Only container can use this proc")
 
   var newWinRect = dtn.rect
   if dtn.children.len == 0:
-    result = newLeafNode(win, newWinRect)
+    newNode.rect = newWinRect
   else:
     let 
       nc = dtn.children.len.float
@@ -125,8 +125,8 @@ func addNewWindow*(dtn; win: HWND): DisplayTreeNode =
     # as we added a new window, so that it goes back to its original size, we
     # need to adjust the size to the orig size
     dtn.rect = origRect
-    result = newLeafNode(win, newWinRect)
-  dtn.addChild result
+    newNode.rect = newWinRect
+  dtn.addChild newNode
 
 
 func getAbsVersion*(dtn; dims: Rect): DisplayTreeNode =
@@ -140,11 +140,12 @@ func getAbsVersion*(dtn; dims: Rect): DisplayTreeNode =
       result = newLeafNode(dtn.win, newRect)
 
 
+func isRoot(dtn): bool = dtn.parent.isNone
+
 func getRoot*(dtn): DisplayTreeNode =
   result = dtn
-  while result.parent.isSome:
+  while not result.isRoot:
     result = result.parent.unsafeget
-
 
 func getLeafNodes*(dtn): seq[DisplayTreeNode] =
   var leafs = result
@@ -153,3 +154,34 @@ func getLeafNodes*(dtn): seq[DisplayTreeNode] =
       leafs.add it
     result = none(void)
   result = leafs
+
+proc removeFromTree*(dtn) =
+  ## Removes one element from the tree, and then resizes the rest. As this
+  ## would becok
+
+  # If the current window is the only child of a container, the container is
+  # removed instead, but only if it isnt the root
+  if dtn.isRoot():
+    error "you cannot remove the root node"
+  let parent = dtn.parent.unsafeget()
+  if not parent.isRoot and parent.children.len() == 1:
+    return parent.removeFromTree()
+
+  parent.children.del(parent.children.find(dtn))
+
+  let origRect = parent.rect
+  case parent.orientation:
+    of oDeep: return
+    of oHorizontal:
+      parent.rect.w -= dtn.rect.w
+    of oVertical:
+      parent.rect.h -= dtn.rect.h
+  parent.reposition origRect
+
+proc printTree*(dtn; indentLevel=0)=
+  if indentLevel == 0:
+    echo "\p"
+  echo("  ".repeat(indentLevel).join() & $dtn)
+  if dtn.kind == dtkContainer:
+    for child in dtn.children:
+      child.printTree(indentLevel + 1)

@@ -18,6 +18,10 @@ If you press MEH + one of V, H, or D before grabbing a window, the last window
 will be wrapped into a new container with the respective orientation, and the
 new window will be added to it.
 
+Windows that are managed by winman will be checked twice per secon for whether
+they still exist, and if they dont, they are kicked, and everything else is
+resized. (This is done in one thread, in a mainloop)
+
 ## Plans for the future.
 
 Besides implemententing all the features you'd expect from a sensible window

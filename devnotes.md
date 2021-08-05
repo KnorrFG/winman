@@ -8,27 +8,28 @@ that comes bundled with the default mingw distribution for nim. However, nimble
 does not add the mingw folder to the path automatically, so for this to work,
 you must make sure, windres is in the path
 
-Todo next:
-Select window on depth isnt implemented yet.
-Also, when using v, h, and d prefixes, it will only work, if the currently
-selected window is managed. but its very intuitive to press that directly
-before grabbing a new window, when the new window is already active. And this
-2nd scenario should work too.
-
 ## Roadmap:
 
 ### First usable Version
 
 - [x] depth selection
 - [x] fix orientation input
-- deal with disapearing windows
+- [x] deal with disapearing windows
 - hk to remove window
-- hk to remove and close window
+- Touch and TouchParent
 - groups
 
 ### Horizon:
 
 - config script
-- multi monitor support
+- multi monitor support 
+	- there is an easy version of this, which just respekts other monitors on the
+			current virtual desktop, and one hard version, which incorporates windows
+			virtual desktops
+	- There are also two versions of virtual desktop support: actually use
+			windows virtual desktops as Groups, which will be very hard, and the
+			second version is to have a set of groups per virtual desktop. Which is
+			way easier, because it doesnt relly on unofficial and undocumented
+			windows apis
 - moving windows with a gui
 - virtual desktop support

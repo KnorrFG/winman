@@ -1,4 +1,5 @@
-import tables, sequtils, sets, strutils, options, sugar
+import tables, sequtils, sets, strutils, options, sugar, std/monotimes, times,
+  os
 import winim except RECT
 import core, display_tree, winapiutils
 
@@ -8,6 +9,7 @@ type
   Hotkey = object
     key: int
     modifiers: HashSet[int]
+  GroupId = range[1..10]
   State = object
     trees: array[numAreas, DisplayTreeNode]
     managedWindows: TableRef[HWND, DisplayTreeNode]
@@ -18,10 +20,36 @@ type
       ## a grab window comand will look at the orientation, and respect it, if
       ## it was used as the last command. If it was longer ago, itl be ignored
     currentCommandId: uint64
-    activeGroup: 1..10
+    activeGroup: GroupId
+    lastWindowCheck: MonoTime
+    monitorRects: TableRef[GroupId, Rect[int32]]
+  Config = object
+    windowCheckInterval: Duration
   EventFunc = proc(s: var State){.gcSafe, closure.}
     
     
+proc initState(): State =
+  # The state should store relative sizes, which get concretized, once its
+  # clear on which monitor the windows should be displayed
+  result = State(
+      managedWindows: newTable[HWND, DisplayTreeNode](),
+      containerOrientationFlag: (id: 0.uint64, orient: oHorizontal),
+      currentCommandId: 2.uint64,
+        # start at 2, so the initial orientation is ignored
+      activeGroup: 1,
+      lastWindowCheck: getMonoTime()
+    )
+
+  for i in 0..<numAreas:
+    result.trees[i] = newContainerNode(oHorizontal, initRect[float](0, 0, 1, 1))
+
+
+proc initConfig(): Config =
+  Config(
+   windowCheckInterval: initDuration(milliseconds=500)
+  )
+
+
 func getActiveTree(s: State): DisplayTreeNode = s.trees[s.activeGroup - 1]
 
 
@@ -75,6 +103,9 @@ proc getMonitorRect(): Rect[int32] =
     error "Couldn't retrieve work area rect"
   initRect(res.left, res.top, res.right - res.left, res.bottom - res.top) 
 
+proc getCurrentMonitorRect(s: State): Rect[int32] =
+  ## This function will be relevant later, when I support multiple Monitors
+  getMonitorRect()
 
 template getForegroundWindowOrReturn(s: State, mustBeManaged: bool): untyped =
   let curWin = GetForegroundWindow()
@@ -85,9 +116,12 @@ template getForegroundWindowOrReturn(s: State, mustBeManaged: bool): untyped =
 
 
 proc positionWindows(dtn: DisplayTreeNode) =
+  assert dtn.kind == dtkContainer
   for child in dtn.children:
     case child.kind:
-      of dtkContainer: child.positionWindows()
+      of dtkContainer:
+        child.positionWindows()
+        return
       of dtkLeaf:
         discard
     
@@ -101,7 +135,6 @@ proc positionWindows(dtn: DisplayTreeNode) =
     let 
       cr = child.rect
       margin = getMargins(child.win)
-
     SetWindowPos(child.win, HWND_TOP, cr.x - margin.left,
                  cr.y - margin.top, cr.w + margin.left + margin.right - 1,
                  cr.h + margin.top + margin.bottom - 1, flags)
@@ -118,6 +151,29 @@ proc wrapLastWinInNewContainer(s: var State): DisplayTreeNode =
   newContainer.addChild lastWinNode
   oldParent.addChild newContainer
   newContainer
+
+
+proc adjustForMissingWindows(state: var State) =
+  ## As this is Windows, sooner or later, a window will be closed, and we wont
+  ## know that happened. So we'll just check whether all windows that are
+  ## supposed to exist still exist, and if they dont, adjust the tree.
+  ## handles can be recycled, so it might happen that a new window has the old
+  ## HWND, but as we check this quite frequently, I think the risk is minimal
+  var deadNodes = collect(newSeq):
+    for hwnd, node in state.managedWindows:
+      if IsWindow(hwnd) == 0:
+        node
+
+  for node in deadNodes:
+    let root = node.getRoot
+    node.removeFromTree
+    state.managedWindows.del(node.win)
+
+  let activeTree = state.getActiveTree()
+  if deadNodes.anyIt(it.getRoot() == activeTree):
+    activeTree.printTree()
+    let absTree = activeTree.getAbsVersion(state.getCurrentMonitorRect())
+    absTree.positionWindows()
 
 
 proc makeGrabWindow(): EventFunc =
@@ -142,9 +198,10 @@ proc makeGrabWindow(): EventFunc =
         else:
           s.getActiveTree
 
-    let newLeaf = curContainer.addNewWindow curWin
+    let newLeaf = newLeafNode(curWin)
+    curContainer.addNode newLeaf
     s.managedWindows[curWin] = newLeaf
-    curContainer.getAbsVersion(getMonitorRect()).positionWindows
+    curContainer.getAbsVersion(s.getCurrentMonitorRect()).positionWindows
 
 
 proc makeOrientationFlagSetter(orient: Orientation): EventFunc =
@@ -248,24 +305,11 @@ proc dispatch(ev: Event): EventFunc =
       error "Not Implemented"
 
 
-proc initState(): State =
-  # The state should store relative sizes, which get concretized, once its
-  # clear on which monitor the windows should be displayed
-  result = State(
-      managedWindows: newTable[HWND, DisplayTreeNode](),
-      containerOrientationFlag: (id: 0.uint64, orient: oHorizontal),
-      currentCommandId: 2.uint64,
-        # start at 2, so the initial orientation is ignored
-      activeGroup: 1,
-    )
-
-  for i in 0..<numAreas:
-    result.trees[i] = newContainerNode(oHorizontal, initRect[float](0, 0, 1, 1))
-
-
 proc main()=
   echo "Started"
-  let hotkeys = getHotkeys()
+  let 
+    hotkeys = getHotkeys()
+    config = initConfig()
   for event, hk in hotkeys:
     if not hk.register(event):
       error "Couldn't register hotkey: ", hk
@@ -276,14 +320,22 @@ proc main()=
     msg: MSG
 
   while run:
-    GetMessage(msg, 0, 0, 0) 
-    if msg.message == WM_HOTKEY:
-      let handler = dispatch Event(msg.wparam)
-      handler(state)
-      state.currentCommandId.inc
-      let curWin = GetForegroundWindow()
-      if curWin in state.managedWindows:
-        state.lastUsedWindow = if curWin != 0: some(curWin) else: none(HWND)
+    #GetMessage(msg, 0, 0, 0) 
+    if PeekMessage(msg, 0, 0, 0, PM_REMOVE) != 0:
+      if msg.message == WM_HOTKEY:
+        let handler = dispatch Event(msg.wparam)
+        handler(state)
+        state.currentCommandId.inc
+        let curWin = GetForegroundWindow()
+        if curWin in state.managedWindows:
+          state.lastUsedWindow = if curWin != 0: some(curWin) else: none(HWND)
+        state.getActiveTree.printTree()
+
+    let now = getMonoTime()
+    if (now - state.lastWindowCheck) >= config.windowCheckInterval:
+      state.adjustForMissingWindows()
+      state.lastWindowCheck = now
+    sleep 5
 
 
 when isMainModule:
