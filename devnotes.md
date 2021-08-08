@@ -15,9 +15,10 @@ you must make sure, windres is in the path
 - [x] depth selection
 - [x] fix orientation input
 - [x] deal with disapearing windows
-- hk to remove window
+- [x] hk to remove window
 - Touch and TouchParent
 - groups
+- also, before public release, logging might be a nice idea
 
 ### Horizon:
 

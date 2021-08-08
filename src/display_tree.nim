@@ -165,7 +165,8 @@ proc removeFromTree*(dtn) =
     error "you cannot remove the root node"
   let parent = dtn.parent.unsafeget()
   if not parent.isRoot and parent.children.len() == 1:
-    return parent.removeFromTree()
+    parent.removeFromTree()
+    return
 
   parent.children.del(parent.children.find(dtn))
 

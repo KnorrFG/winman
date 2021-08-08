@@ -82,6 +82,8 @@ func getHotkeys(): Table[Event, Hotkey] =
   func hk(key: char): Hotkey = initHotkey(key.ord, dm)
   {
     eGrabWindow: hk('G'),
+    eDropWindow: hk('E'),
+    eTouchParent: hk('P'),
     eRunLauncher: hk('R'),
     eAddSubGroupH: hk('Z'),
     eAddSubGroupV: hk('V'),
@@ -95,6 +97,14 @@ func getHotkeys(): Table[Event, Hotkey] =
     eChangeOrientation: hk('C'),
     eSelectGroup1: hk('1'),
     eSelectGroup2: hk('2'),
+    eSelectGroup3: hk('3'),
+    eSelectGroup4: hk('4'),
+    eSelectGroup5: hk('5'),
+    eSelectGroup6: hk('6'),
+    eSelectGroup7: hk('7'),
+    eSelectGroup8: hk('8'),
+    eSelectGroup9: hk('9'),
+    eSelectGroup10: hk('0'),
   }.toTable
 
 proc getMonitorRect(): Rect[int32] =
@@ -204,6 +214,20 @@ proc makeGrabWindow(): EventFunc =
     curContainer.getAbsVersion(s.getCurrentMonitorRect()).positionWindows
 
 
+proc makeDropWindow(): EventFunc =
+  result = proc(s: var State) =
+    let 
+      curWin = s.getForegroundWindowOrReturn(mustBeManaged=true)
+      node = s.managedWindows[curWin]
+      root = node.getRoot()
+    node.removeFromTree()
+    s.managedWindows.del(curWin)
+    if s.getActiveTree() == root:
+      root.getAbsVersion(s.getCurrentMonitorRect()).positionWindows()
+
+
+
+
 proc makeOrientationFlagSetter(orient: Orientation): EventFunc =
   result = proc (s: var State) =
     s.containerOrientationFlag = (id: s.currentCommandId, orient: orient)
@@ -292,6 +316,7 @@ proc makeSelectFunction(d: Direction): EventFunc =
 proc dispatch(ev: Event): EventFunc =
   case ev:
     of eGrabWindow: makeGrabWindow()
+    of eDropWindow: makeDropWindow()
     of eAddSubGroupD: makeOrientationFlagSetter(oDeep)
     of eAddSubGroupH: makeOrientationFlagSetter(oHorizontal)
     of eAddSubGroupV: makeOrientationFlagSetter(oVertical)
