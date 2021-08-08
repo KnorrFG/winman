@@ -13,7 +13,7 @@ type
   State = object
     trees: array[numAreas, DisplayTreeNode]
     managedWindows: TableRef[HWND, DisplayTreeNode]
-    lastUsedWindow: Option[HWND]
+    lastUsedWindow: TableRef[GroupId, Option[HWND]]
     containerOrientationFlag: tuple[id: uint64, orient: Orientation] ## \
       ## The basic idea here is, that every command will have an id attached,
       ## which will start with 0 and then be increased with every command. And
@@ -52,6 +52,8 @@ proc initConfig(): Config =
 
 func getActiveTree(s: State): DisplayTreeNode = s.trees[s.activeGroup - 1]
 
+func getLastUsedWindowForActiveGroup(s: State): Option[HWND] =
+  s.lastUsedWindow[s.activeGroup]
 
 func initHotkey(key: int, modifiers: HashSet[int]): Hotkey =
   Hotkey(key:key, modifiers:modifiers)
@@ -152,7 +154,7 @@ proc positionWindows(dtn: DisplayTreeNode) =
 
 proc wrapLastWinInNewContainer(s: var State): DisplayTreeNode =
   let 
-    lastWinNode = s.managedWindows[s.lastUsedWindow.get]
+    lastWinNode = s.managedWindows[s.getLastUsedWindowForActiveGroup.get]
     newContainer = newContainerNode(s.containerOrientationFlag.orient,
                                     lastWinNode.rect)
     oldParent = lastWinNode.parent.get()
@@ -199,12 +201,13 @@ proc makeGrabWindow(): EventFunc =
       # if the user pressed one of the orentation keys, wrap the last window in a
       # container
       if s.containerOrientationFlag.id == s.currentCommandId - 1 and
-          s.lastUsedWindow.isSome and
-          s.lastUsedWindow.get in s.managedWindows:
+          s.getLastUsedWindowForActiveGroup.isSome and
+          s.getLastUsedWindowForActiveGroup.get in s.managedWindows:
         wrapLastWinInNewContainer s
       else:
-        if s.lastUsedWindow.isSome and s.lastUsedWindow.get in s.managedWindows:
-          s.managedWindows[s.lastUsedWindow.unsafeGet].parent.get()
+        let last = s.getLastUsedWindowForActiveGroup()
+        if last.isSome and last.get in s.managedWindows:
+          s.managedWindows[last.unsafeGet].parent.get()
         else:
           s.getActiveTree
 
@@ -224,8 +227,6 @@ proc makeDropWindow(): EventFunc =
     s.managedWindows.del(curWin)
     if s.getActiveTree() == root:
       root.getAbsVersion(s.getCurrentMonitorRect()).positionWindows()
-
-
 
 
 proc makeOrientationFlagSetter(orient: Orientation): EventFunc =
@@ -353,7 +354,9 @@ proc main()=
         state.currentCommandId.inc
         let curWin = GetForegroundWindow()
         if curWin in state.managedWindows:
-          state.lastUsedWindow = if curWin != 0: some(curWin) else: none(HWND)
+          state.lastUsedWindow[state.activeGroup] =
+            if curWin != 0: some(curWin) 
+            else: none(HWND)
         state.getActiveTree.printTree()
 
     let now = getMonoTime()
