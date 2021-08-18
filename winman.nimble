@@ -12,10 +12,14 @@ bin           = @["winman"]
 
 requires "nim >= 1.4.6", "winim"
 
-task b, "build and run":
-  echo "INFO: running custom build task"
+task buildRes, "compiles the resources.rc":
+  echo "Compiling Resource"
   exec "windres -i resources.rc -o resources.o"
+
+before build:
+  echo "INFO: running before build macro"
+  if not fileExists "resources.o":
+    exec "windres -i resources.rc -o resources.o"
   --gc:orc
   --define:noRes
   --passL:resources.o
-  setCommand "build", "winman"
