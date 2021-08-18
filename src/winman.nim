@@ -11,9 +11,10 @@ type
     modifiers: HashSet[int]
   GroupId = range[1..10]
   State = object
-    trees: array[numAreas, DisplayTreeNode]
-    managedWindows: TableRef[HWND, DisplayTreeNode]
+    trees: TableRef[GroupId, DisplayTreeNode]
     lastUsedWindow: TableRef[GroupId, Option[HWND]]
+    monitorRects: TableRef[GroupId, Rect[int32]]
+    managedWindows: TableRef[HWND, DisplayTreeNode]
     containerOrientationFlag: tuple[id: uint64, orient: Orientation] ## \
       ## The basic idea here is, that every command will have an id attached,
       ## which will start with 0 and then be increased with every command. And
@@ -22,26 +23,28 @@ type
     currentCommandId: uint64
     activeGroup: GroupId
     lastWindowCheck: MonoTime
-    monitorRects: TableRef[GroupId, Rect[int32]]
   Config = object
     windowCheckInterval: Duration
-  EventFunc = proc(s: var State){.gcSafe, closure.}
+  EventFunc = proc(s: var State): Option[HWND]{.gcSafe, closure.}
     
     
 proc initState(): State =
   # The state should store relative sizes, which get concretized, once its
   # clear on which monitor the windows should be displayed
   result = State(
+      trees: newTable[GroupId, DisplayTreeNode](),
       managedWindows: newTable[HWND, DisplayTreeNode](),
       containerOrientationFlag: (id: 0.uint64, orient: oHorizontal),
       currentCommandId: 2.uint64,
         # start at 2, so the initial orientation is ignored
       activeGroup: 1,
-      lastWindowCheck: getMonoTime()
-    )
+      lastWindowCheck: getMonoTime(),
+      lastUsedWindow: newTable[GroupId, Option[HWND]](),
+      )
 
-  for i in 0..<numAreas:
-    result.trees[i] = newContainerNode(oHorizontal, initRect[float](0, 0, 1, 1))
+  for x in GroupId.low..GroupId.high:
+    result.lastUsedWindow[x] = none(HWND)
+    result.trees[x] = newContainerNode(oHorizontal, initRect[float](0, 0, 1, 1))
 
 
 proc initConfig(): Config =
@@ -49,10 +52,9 @@ proc initConfig(): Config =
    windowCheckInterval: initDuration(milliseconds=500)
   )
 
+func getActiveTree(s: State): DisplayTreeNode = s.trees[s.activeGroup]
 
-func getActiveTree(s: State): DisplayTreeNode = s.trees[s.activeGroup - 1]
-
-func getLastUsedWindowForActiveGroup(s: State): Option[HWND] =
+proc getLastUsedWindowForActiveGroup(s: State): Option[HWND] =
   s.lastUsedWindow[s.activeGroup]
 
 func initHotkey(key: int, modifiers: HashSet[int]): Hotkey =
@@ -122,7 +124,7 @@ proc getCurrentMonitorRect(s: State): Rect[int32] =
 template getForegroundWindowOrReturn(s: State, mustBeManaged: bool): untyped =
   let curWin = GetForegroundWindow()
   if curWin == 0 or (mustBeManaged and not (curWin in s.managedWindows)):
-    return
+    return s.getLastUsedWindowForActiveGroup()
   else:
     curWin
 
@@ -137,20 +139,36 @@ proc positionWindows(dtn: DisplayTreeNode) =
       of dtkLeaf:
         discard
     
-    var flags: UINT = SWP_ASYNCWINDOWPOS
-
-    if dtn.orientation == oDeep:
-      flags = flags or SWP_NOACTIVATE
+    let (zPos, flags) = if dtn.orientation == oDeep:
+      (HWND_TOP, SWP_NOACTIVATE.UINT)
     else:
-      flags = flags or SWP_SHOWWINDOW
+      (HWND_TOPMOST, 0.UINT)
 
     let 
       cr = child.rect
       margin = getMargins(child.win)
-    SetWindowPos(child.win, HWND_TOP, cr.x - margin.left,
+
+    # Relevant Winapi quirks:
+    #
+    # 1. There are many functions, to bring a window to the top of the display
+    # stack, but for some reason they dont work. The most reliable thing seems
+    # to be to make a window topmost, which means its always on top, even if it
+    # overlaps with the active window, and then remove topmost again
+    # immediately.
+    #
+    # 2. The window size is larger than what is displayed, if you just tell the
+    # windows to have the size you want, you will actually see gaps, when there
+    # should be none, this is addressed by the margins.
+   
+    SetWindowPos(child.win, zPos, cr.x - margin.left,
                  cr.y - margin.top, cr.w + margin.left + margin.right - 1,
                  cr.h + margin.top + margin.bottom - 1, flags)
+    if zPos == HWND_TOPMOST:
+      SetWindowPos(
+        child.win, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOSIZE or SWP_NOMOVE)
 
+proc positionWindowsInActiveTree(s: State) =
+    s.getActiveTree.getAbsVersion(s.getCurrentMonitorRect()).positionWindows
 
 proc wrapLastWinInNewContainer(s: var State): DisplayTreeNode =
   let 
@@ -181,9 +199,13 @@ proc adjustForMissingWindows(state: var State) =
     node.removeFromTree
     state.managedWindows.del(node.win)
 
+    # remove the node from the last used windows, if it is in there
+    for id in GroupId.low .. GroupId.high:
+      if state.lastUsedWindow[id] == some(node.win):
+        state.lastUsedWindow[id] = none(HWND)
+
   let activeTree = state.getActiveTree()
   if deadNodes.anyIt(it.getRoot() == activeTree):
-    activeTree.printTree()
     let absTree = activeTree.getAbsVersion(state.getCurrentMonitorRect())
     absTree.positionWindows()
 
@@ -192,7 +214,7 @@ proc makeGrabWindow(): EventFunc =
   # While it looks completely unnecessary to return an anoymous proc here, it
   # is necessary, because this can be .closure. and either all or no
   # eventFunctions must have closures. And since the others have ...
-  result = proc(s: var State) =
+  result = proc(s: var State): Option[HWND] =
     let curWin = GetForegroundWindow()
     if curWin in s.managedWindows:
       return
@@ -214,11 +236,12 @@ proc makeGrabWindow(): EventFunc =
     let newLeaf = newLeafNode(curWin)
     curContainer.addNode newLeaf
     s.managedWindows[curWin] = newLeaf
-    curContainer.getAbsVersion(s.getCurrentMonitorRect()).positionWindows
+    s.positionWindowsInActiveTree()
+    return some(curWin)
 
 
 proc makeDropWindow(): EventFunc =
-  result = proc(s: var State) =
+  result = proc(s: var State): Option[HWND] =
     let 
       curWin = s.getForegroundWindowOrReturn(mustBeManaged=true)
       node = s.managedWindows[curWin]
@@ -226,16 +249,47 @@ proc makeDropWindow(): EventFunc =
     node.removeFromTree()
     s.managedWindows.del(curWin)
     if s.getActiveTree() == root:
-      root.getAbsVersion(s.getCurrentMonitorRect()).positionWindows()
+      s.positionWindowsInActiveTree()
+    return none(HWND)
+
+
+proc makeChangeOrientation(): EventFunc =
+  result = proc(s: var State): Option[HWND] =
+    let 
+      curWin = s.getForegroundWindowOrReturn(mustBeManaged=true)
+      parent = s.managedWindows[curWin].parent.get()
+      pRect = parent.rect
+      newOrientation = parent.orientation.next
+      nChildren = parent.children.len.float
+
+    parent.orientation = newOrientation
+    let (w, h, xIncrement, yIncrement) = case newOrientation:
+      of oDeep:
+        (pRect.w, pRect.h, 0.0, 0.0)
+      of oVertical:
+        let winHeight = pRect.h / nChildren
+        (pRect.w, winHeight, 0.0, winHeight)
+      of oHorizontal:
+        let winWidth = pRect.w / nChildren
+        (winWidth, pRect.h, winWidth, 0.0)
+
+    var (x, y) = (pRect.x, pRect.y)
+    for c in parent.children:
+      c.rect = initRect(x, y, w, h)
+      x += xIncrement
+      y += yIncrement
+    s.positionWindowsInActiveTree()
 
 
 proc makeOrientationFlagSetter(orient: Orientation): EventFunc =
-  result = proc (s: var State) =
+  result = proc (s: var State): Option[HWND] =
     s.containerOrientationFlag = (id: s.currentCommandId, orient: orient)
+    let win = s.getForegroundWindowOrReturn(mustBeManaged=true)
+    return some(win)
 
 
 proc selectWin2D(s: var State, dir: Direction, targetOri: Orientation,
-                 child: DisplayTreeNode) =
+                 child: DisplayTreeNode): Option[HWND] =
   assert targetOri in [oVertical, oHorizontal]
   let 
     root = child.getRoot
@@ -264,9 +318,12 @@ proc selectWin2D(s: var State, dir: Direction, targetOri: Orientation,
   if filteredCorners.len > 0:
     let newWin = relWinCorners[filteredCorners.getter]
     SetForegroundWindow newWin.win
+    return some(newWin.win)
+  return none(HWND)
 
 
-proc selectWinDeep(s: var State, dir: Direction, child: DisplayTreeNode) =
+proc selectWinDeep(s: var State, dir: Direction, child: DisplayTreeNode):
+    Option[HWND] =
   assert dir in [dirFront, dirBack]
   # this is very simple, we just go up the tree, until we finde a deep container,
   # und select the next or the previous child
@@ -296,28 +353,42 @@ proc selectWinDeep(s: var State, dir: Direction, child: DisplayTreeNode) =
     while currentNode.kind != dtkLeaf:
       currentNode = currentNode.children[0]
     SetForegroundWindow currentNode.win
+    return some(currentNode.win)
+  return none(HWND)
 
 
-
-proc selectWindowByDirection(s: var State, dir: Direction) =
+proc selectWindowByDirection(s: var State, dir: Direction): Option[HWND] =
   let 
     curWin = s.getForegroundWindowOrReturn(mustBeManaged=true)
     targetOri = dir.toOri
     child = s.managedWindows[curWin]
 
   if targetOri == oDeep:
-    selectWinDeep s, dir, child
+    return selectWinDeep(s, dir, child)
   else:
-    selectWin2D s, dir, targetOri, child
+    return selectWin2D(s, dir, targetOri, child)
 
 
 proc makeSelectFunction(d: Direction): EventFunc =
   (s: var State) => selectWindowByDirection(s, d)
 
+
+proc makeSelectGroup(i: GroupId): EventFunc =
+  result = proc (s: var State): Option[HWND] =
+    s.activeGroup = i
+    let last = s.getLastUsedWindowForActiveGroup()
+    s.positionWindowsInActiveTree()
+
+    if last.isSome:
+      SetForegroundWindow last.unsafeGet
+    return last
+
+
 proc dispatch(ev: Event): EventFunc =
   case ev:
     of eGrabWindow: makeGrabWindow()
     of eDropWindow: makeDropWindow()
+    of eChangeOrientation: makeChangeOrientation()
     of eAddSubGroupD: makeOrientationFlagSetter(oDeep)
     of eAddSubGroupH: makeOrientationFlagSetter(oHorizontal)
     of eAddSubGroupV: makeOrientationFlagSetter(oVertical)
@@ -327,8 +398,19 @@ proc dispatch(ev: Event): EventFunc =
     of eSelectWinR: makeSelectFunction(dirRight)
     of eSelectWinF: makeSelectFunction(dirFront)
     of eSelectWinB: makeSelectFunction(dirBack)
+    of eSelectGroup1: makeSelectGroup(1)
+    of eSelectGroup2: makeSelectGroup(2)
+    of eSelectGroup3: makeSelectGroup(3)
+    of eSelectGroup4: makeSelectGroup(4)
+    of eSelectGroup5: makeSelectGroup(5)
+    of eSelectGroup6: makeSelectGroup(6)
+    of eSelectGroup7: makeSelectGroup(7)
+    of eSelectGroup8: makeSelectGroup(8)
+    of eSelectGroup9: makeSelectGroup(9)
+    of eSelectGroup10: makeSelectGroup(10)
     else:
-      error "Not Implemented"
+      echo "Not Implemented"
+      (s: var State) => s.getLastUsedWindowForActiveGroup()
 
 
 proc main()=
@@ -349,14 +431,18 @@ proc main()=
     #GetMessage(msg, 0, 0, 0) 
     if PeekMessage(msg, 0, 0, 0, PM_REMOVE) != 0:
       if msg.message == WM_HOTKEY:
-        let handler = dispatch Event(msg.wparam)
-        handler(state)
+        let 
+          handler = dispatch Event(msg.wparam)
+          curWin = handler(state)
         state.currentCommandId.inc
-        let curWin = GetForegroundWindow()
-        if curWin in state.managedWindows:
-          state.lastUsedWindow[state.activeGroup] =
-            if curWin != 0: some(curWin) 
-            else: none(HWND)
+        if curWin.isSome:
+          # kurz nachdem ich ein managed window geschlossen hatte, hat diese
+          # assertion getriggert, allerdings erst nach erfolgreichem resizing
+          # der anderen member
+          # Allerdings vermutlich erst nachdem ich ein paar mal auf gruppe 1
+          # gedrückt hatte, und das geschlossene Fenster war in Gruppe 2
+          assert curWin.unsafeGet in state.managedWindows
+        state.lastUsedWindow[state.activeGroup] = curWin
         state.getActiveTree.printTree()
 
     let now = getMonoTime()

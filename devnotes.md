@@ -8,6 +8,12 @@ that comes bundled with the default mingw distribution for nim. However, nimble
 does not add the mingw folder to the path automatically, so for this to work,
 you must make sure, windres is in the path
 
+mouse focus does not switch reliably. This seems to be in context of maximizing
+the window while it is under control of the wm. But also without a good excuse
+
+The monitor rect is wrong, if display scaling is used
+
+
 ## Roadmap:
 
 ### First usable Version
@@ -17,7 +23,10 @@ you must make sure, windres is in the path
 - [x] deal with disapearing windows
 - [x] hk to remove window
 - Touch and TouchParent
-- groups
+- [x] groups
+- change orientation
+- config
+- fix the deep display bug
 - also, before public release, logging might be a nice idea
 
 ### Horizon:

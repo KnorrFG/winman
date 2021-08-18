@@ -6,8 +6,7 @@ type
     eSelectWinU, eSelectWinD, eSelectWinL, eSelectWinR, eSelectWinF,
     eSelectWinB, eChangeOrientation, eSelectGroup1, eSelectGroup2,
     eSelectGroup3, eSelectGroup4, eSelectGroup5, eSelectGroup6, eSelectGroup7,
-    eSelectGroup8, eSelectGroup9, eSelectGroup10, eTouch, eTouchParent,
-    eDropWindow
+    eSelectGroup8, eSelectGroup9, eSelectGroup10, eTouchParent, eDropWindow
   Direction* = enum
     dirUp, dirDown, dirLeft, dirRight, dirFront, dirBack
   Rect*[T] = object
@@ -39,11 +38,12 @@ proc `$`*(x: Orientation): string =
 proc hash*[T](x: Pos[T]): Hash =
   var hash: Hash = 0
   result = !$(hash !& x.x.hash !& x.y.hash)
-  
 
-#converter fRectToI32Rect*(r: Rect[float]): Rect[int32] =
-  #initRect(r.x.int32, r.y.int32, r.w.int32, r.h.int32)
-
+proc next*(o: Orientation): Orientation=
+  if o == Orientation.high:
+    Orientation.low
+  else:
+    succ o
 
 func to*[T, T2](r: Rect[T2]): Rect[T] = initRect(r.x.T, r.y.T, r.w.T, r.h.T)
 func to*[T, T2](r: Pos[T2]): Pos[T] = initPos(r.x.T, r.y.T)

@@ -30,5 +30,8 @@ automatically grab the windows, that you start through the launcher.
 
 ## Building
 
-This is a windows program, and requires a manifest. The nimble file contains a
-build task, that will take care of this. Build it by calling `nimble b`
+This is a windows program, and requires a manifest. The before build part of
+the nimble file takes care of it. However, if you, for what ever reason, change
+the resources.rc file, it will not automatically be remopiled. Mainly because
+the getFileInfo() proc is not available in nimscript, so its not possible to
+compare the lastEdited Timestamps.

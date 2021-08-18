@@ -97,7 +97,7 @@ proc addNode*(dtn; newNode: DisplayTreeNode)=
 
   var newWinRect = dtn.rect
   if dtn.children.len == 0:
-    newNode.rect = newWinRect
+    newNode.reposition newWinRect
   else:
     let 
       nc = dtn.children.len.float
@@ -125,7 +125,7 @@ proc addNode*(dtn; newNode: DisplayTreeNode)=
     # as we added a new window, so that it goes back to its original size, we
     # need to adjust the size to the orig size
     dtn.rect = origRect
-    newNode.rect = newWinRect
+    newNode.reposition newWinRect
   dtn.addChild newNode
 
 
