@@ -20,6 +20,3 @@ before build:
   echo "INFO: running before build macro"
   if not fileExists "resources.o":
     exec "windres -i resources.rc -o resources.o"
-  --gc:orc
-  --define:noRes
-  --passL:resources.o
