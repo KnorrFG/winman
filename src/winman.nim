@@ -1,5 +1,5 @@
 import tables, sequtils, sets, strutils, options, sugar, std/monotimes, times,
-  os
+  os, strutils
 import winim except RECT
 import core, display_tree, winapiutils
 
@@ -13,7 +13,8 @@ type
   State = object
     trees: TableRef[GroupId, DisplayTreeNode]
     lastUsedWindow: TableRef[GroupId, Option[HWND]]
-    monitorRects: TableRef[GroupId, Rect[int32]]
+    monitorRects: TableRef[HMONITOR, Rect[int32]]
+    monitorMap: TableRef[GroupId, HMONITOR]
     managedWindows: TableRef[HWND, DisplayTreeNode]
     containerOrientationFlag: tuple[id: uint64, orient: Orientation] ## \
       ## The basic idea here is, that every command will have an id attached,
@@ -21,6 +22,7 @@ type
       ## a grab window comand will look at the orientation, and respect it, if
       ## it was used as the last command. If it was longer ago, itl be ignored
     currentCommandId: uint64
+    currentMonitor: HMONITOR
     activeGroup: GroupId
     lastWindowCheck: MonoTime
   Config = object
@@ -31,6 +33,7 @@ type
 proc initState(): State =
   # The state should store relative sizes, which get concretized, once its
   # clear on which monitor the windows should be displayed
+  let monRects = getMonitorRects()
   result = State(
       trees: newTable[GroupId, DisplayTreeNode](),
       managedWindows: newTable[HWND, DisplayTreeNode](),
@@ -40,11 +43,15 @@ proc initState(): State =
       activeGroup: 1,
       lastWindowCheck: getMonoTime(),
       lastUsedWindow: newTable[GroupId, Option[HWND]](),
+      monitorRects: monRects,
+      monitorMap: newTable[GroupId, HMONITOR](),
+      currentMonitor: toSeq(monRects.keys)[0]
       )
 
   for x in GroupId.low..GroupId.high:
     result.lastUsedWindow[x] = none(HWND)
     result.trees[x] = newContainerNode(oHorizontal, initRect[float](0, 0, 1, 1))
+    result.monitorMap[x] = toSeq(result.monitorRects.keys)[0]
 
 
 proc initConfig(): Config =
@@ -81,9 +88,27 @@ proc register(hk: Hotkey, ev: Event): bool =
   RegisterHotkey(0, ev.ord.int32, hk.mergedModifiers, hk.key.UINT) != 0
 
 
-func getHotkeys(): Table[Event, Hotkey] =
-  let dm = [MOD_CONTROL, MOD_ALT, MOD_SHIFT].toHashSet
-  func hk(key: char): Hotkey = initHotkey(key.ord, dm)
+const otherKeyMappings = {
+  '.': VK_OEM_PERIOD,
+  ',': VK_OEM_COMMA,
+  '+': VK_OEM_PLUS,
+  '-': VK_OEM_MINUS,
+}.toTable
+
+proc toKeyCode(key: char): int =
+  if key in 'A'..'Z' or key in '0'..'9':
+    key.ord
+  elif key in 'a'..'z':
+    key.toUpperAscii.ord
+  elif key in otherKeyMappings:
+    otherKeyMappings[key]
+  else:
+    error "unrecognized key " & $key
+
+proc getHotkeys(): Table[Event, Hotkey] =
+  let dm = [MOD_ALT].toHashSet
+  #let dm = [MOD_CONTROL, MOD_ALT, MOD_SHIFT].toHashSet
+  proc hk(key: char): Hotkey = initHotkey(key.toKeyCode, dm)
   {
     eGrabWindow: hk('G'),
     eDropWindow: hk('E'),
@@ -109,6 +134,8 @@ func getHotkeys(): Table[Event, Hotkey] =
     eSelectGroup8: hk('8'),
     eSelectGroup9: hk('9'),
     eSelectGroup10: hk('0'),
+    eNextMonitor: hk('.'),
+    ePrevMonitor: hk(',')
   }.toTable
 
 proc getMonitorRect(): Rect[int32] =
@@ -119,7 +146,7 @@ proc getMonitorRect(): Rect[int32] =
 
 proc getCurrentMonitorRect(s: State): Rect[int32] =
   ## This function will be relevant later, when I support multiple Monitors
-  getMonitorRect()
+  s.monitorRects[s.monitorMap[s.activeGroup]]
 
 template getForegroundWindowOrReturn(s: State, mustBeManaged: bool): untyped =
   let curWin = GetForegroundWindow()
@@ -127,7 +154,6 @@ template getForegroundWindowOrReturn(s: State, mustBeManaged: bool): untyped =
     return s.getLastUsedWindowForActiveGroup()
   else:
     curWin
-
 
 proc positionWindows(dtn: DisplayTreeNode) =
   assert dtn.kind == dtkContainer
@@ -159,10 +185,21 @@ proc positionWindows(dtn: DisplayTreeNode) =
     # 2. The window size is larger than what is displayed, if you just tell the
     # windows to have the size you want, you will actually see gaps, when there
     # should be none, this is addressed by the margins.
+    #
+    # 3. If you move windows between monitors with different scaling, the size
+    # will be computed according to the scale of the source monitor, and
+    # consequently, the size will be wrong on the target monitor. Therefore
+    # SetWindowPos is called twice, first moving the window, and then changing
+    # its size. This will circumwent the provlem, although you will be able to
+    # see them moving and then resizing, which is not nice, but the best I
+    # could do in Windows
    
     SetWindowPos(child.win, zPos, cr.x - margin.left,
-                 cr.y - margin.top, cr.w + margin.left + margin.right - 1,
-                 cr.h + margin.top + margin.bottom - 1, flags)
+                 cr.y - margin.top, cr.w + margin.left + margin.right,
+                 cr.h + margin.top + margin.bottom, flags or SWP_NOSIZE)
+    SetWindowPos(child.win, zPos, cr.x - margin.left,
+                 cr.y - margin.top, cr.w + margin.left + margin.right,
+                 cr.h + margin.top + margin.bottom, flags or SWP_NOMOVE)
     if zPos == HWND_TOPMOST:
       SetWindowPos(
         child.win, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOSIZE or SWP_NOMOVE)
@@ -384,6 +421,33 @@ proc makeSelectGroup(i: GroupId): EventFunc =
     return last
 
 
+proc makeChangeMonitor(dir: MonitorSelection): EventFunc =
+  result = proc (s: var State): Option[HWND] =
+    # there might be a new display by now, or one might have been disconnected
+    s.monitorRects = getMonitorRects()
+    let 
+      curMon = s.monitorMap[s.activeGroup]
+      newMon = if curMon in s.monitorRects:
+        let 
+          keys = toSeq s.monitorRects.keys
+          ind = keys.find curMon
+          newInd = case dir:
+            of mPrev:
+                if ind == keys.low: keys.high
+                else: ind - 1
+            of mNext:
+              if ind == keys.high: keys.low
+              else: ind + 1
+        keys[newInd]
+      else:
+        toSeq(s.monitorRects.keys)[0]
+    s.monitorMap[s.activeGroup] = newMon
+    # if this is done only once, the sizes are messed up due to scaling, 
+    # doing it a second time, will correct the sizes.
+    s.positionWindowsInActiveTree()
+    s.getLastUsedWindowForActiveGroup()
+
+
 proc dispatch(ev: Event): EventFunc =
   case ev:
     of eGrabWindow: makeGrabWindow()
@@ -408,6 +472,8 @@ proc dispatch(ev: Event): EventFunc =
     of eSelectGroup8: makeSelectGroup(8)
     of eSelectGroup9: makeSelectGroup(9)
     of eSelectGroup10: makeSelectGroup(10)
+    of eNextMonitor: makeChangeMonitor(mNext)
+    of ePrevMonitor: makeChangeMonitor(mPrev)
     else:
       echo "Not Implemented"
       (s: var State) => s.getLastUsedWindowForActiveGroup()

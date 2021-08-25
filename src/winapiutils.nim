@@ -1,6 +1,7 @@
-import winim, core, strformat
+import winim, core, strformat, tables, sugar
 
-proc GetScaleFactorForMonitor*(hMon: HMONITOR, pScale: ptr DEVICE_SCALE_FACTOR): HRESULT
+proc GetScaleFactorForMonitor*(
+  hMon: HMONITOR, pScale: ptr DEVICE_SCALE_FACTOR): HRESULT
   {.stdcall, dynlib: "Shcore", importc: "GetScaleFactorForMonitor".}
 
 proc SetProcessDpiAwarenessContext*(param: int32): bool
@@ -25,7 +26,33 @@ proc getMargins*(hwnd: HWND): winim.Rect =
   if GetScaleFactorForMonitor(mon, &scale).FAILED:
     error "Couldn't retrieve monitor scale"
 
-  result.left = winSizeWithMargins.left.float - winRect.left
-  result.top = winSizeWithMargins.top.float - winRect.top
-  result.right = winRect.right - winSizeWithMargins.right.float
-  result.bottom = winRect.bottom - winSizeWithMargins.bottom.float
+  # the explorer, and possibly other windows, might leak over between monitors
+  # for some strange reason, by just removing the one pixel for the margins,
+  # this problem is gone, at the cost of tiny gaps, and I can live with that.
+  result.left = winSizeWithMargins.left.float - winRect.left - 1
+  result.top = winSizeWithMargins.top.float - winRect.top - 1
+  result.right = winRect.right - winSizeWithMargins.right.float - 1
+  result.bottom = winRect.bottom - winSizeWithMargins.bottom.float - 1
+
+
+type MonitorTable = TableRef[HMONITOR, core.Rect[int32]]
+
+proc monitorInfoReceiver(
+    handle: HMONITOR, deviceContext: HDC, monRect: LPRECT, data: LPARAM): WINBOOL
+    {.stdcall.} =
+  var 
+    monitorList = cast[ptr MonitorTable](data)[]
+    monInfo: MONITORINFO
+  monInfo.cbSize = sizeof(MONITORINFO).int32
+  if GetMonitorInfo(handle, &monInfo).FAILED:
+    error "couldnt retrieve monitor info"
+  let rect = monInfo.rcWORK
+  monitorList[handle] = initRect(
+    rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top)
+  return true
+
+proc getMonitorRects*(): MonitorTable =
+  var table = newTable[HMONITOR, core.Rect[int32]]()
+  EnumDisplayMonitors(0.HDC, nil, monitorInfoReceiver, cast[LPARAM](table.addr))
+  table
+

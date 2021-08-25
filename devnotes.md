@@ -14,6 +14,31 @@ the window while it is under control of the wm. But also without a good excuse
 The monitor rect is wrong, if display scaling is used
 
 
+## Todo:
+
+For the multimonitor and virtual desktop stuff: since there will be one tree
+per GroupId AND virtual Desktop, I think this is the time to change this to
+lazy tree creation. 
+
+Also, when checking whether a window was closed, I should also check whether it
+was moved to a different virtual desktop.
+
+Also, per Tree, I'll need the Info which desktop its on, as well as the
+ability, to move it to another desktop. Id provide just next and prev for
+desktops. I hope the enumerateDesktops function will keep the order, when a new
+one appears.
+
+Also I need one active tree per virtual desktop.
+
+## Known Problems
+
+1. There will be a 2 pixel gap between Windows, that you cannot get rid off.
+	 This is because the explorer window (and possibly others) will leak into
+	 neighbouring displays without those gaps. Cant prevent that.
+2. You might see windows move first, and resize afterwards. This isn't Ideal,
+	 but if I do both on the same time, the window sizes will be messed up, when
+	 moving the windows between displays with different scaling.
+
 ## Roadmap:
 
 ### First usable Version
@@ -24,9 +49,9 @@ The monitor rect is wrong, if display scaling is used
 - [x] hk to remove window
 - Touch and TouchParent
 - [x] groups
-- change orientation
+- [x] change orientation
 - config
-- fix the deep display bug
+- fix the deep display bug (does it even exist?)
 - also, before public release, logging might be a nice idea
 
 ### Horizon:

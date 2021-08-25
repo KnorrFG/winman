@@ -6,9 +6,12 @@ type
     eSelectWinU, eSelectWinD, eSelectWinL, eSelectWinR, eSelectWinF,
     eSelectWinB, eChangeOrientation, eSelectGroup1, eSelectGroup2,
     eSelectGroup3, eSelectGroup4, eSelectGroup5, eSelectGroup6, eSelectGroup7,
-    eSelectGroup8, eSelectGroup9, eSelectGroup10, eTouchParent, eDropWindow
+    eSelectGroup8, eSelectGroup9, eSelectGroup10, eTouchParent, eDropWindow,
+    eNextMonitor, ePrevMonitor
   Direction* = enum
     dirUp, dirDown, dirLeft, dirRight, dirFront, dirBack
+  MonitorSelection* = enum
+    mNext, mPrev
   Rect*[T] = object
     x*, y*, w*, h*: T
   Size*[T] = object
